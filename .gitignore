@@ -3,3 +3,5 @@ venv/
 *.json
 AGENTS.md
 data/
+temp*
+**/__pycache__/

@@ -59,26 +59,36 @@ def normalize_link(link: str, base_url: str, page_path: str) -> str:
     return link
 
 
-def scrape_website(start_url: str, max_count: int = 100) -> set[str]:
+def normalized_domain(url: str) -> str:
+    """Returns normalized domain for same-domain checks."""
+    netloc = urllib.parse.urlsplit(url).netloc.lower()
+    if netloc.startswith('www.'):
+        return netloc[4:]
+    return netloc
+
+
+def scrape_website(start_url: str, max_count: int = 30, max_depth: int = 2) -> set[str]:
     """
     Scrapes a website starting from the given URL, follows links, and collects email addresses.
 
     :param start_url: The initial URL to start scraping.
-    :param max_count: The maximum number of pages to scrape. Defaults to 100.
+    :param max_count: The maximum number of pages to scrape. Defaults to 30.
+    :param max_depth: The maximum depth to scrape. Defaults to 2.
     :return: A set of email addresses found during the scraping process.
     """
 
-    urls_to_process = deque([start_url])
+    urls_to_process = deque([(start_url, 0)])
     scraped_urls = set()
     collected_emails = set()
     count = 0
+    start_domain = normalized_domain(start_url)
 
     while urls_to_process:
         count += 1
         if count > max_count:
             break
 
-        url = urls_to_process.popleft()
+        url, depth = urls_to_process.popleft()
         if url in scraped_urls:
             continue
 
@@ -102,7 +112,13 @@ def scrape_website(start_url: str, max_count: int = 100) -> set[str]:
         for anchor in soup.find_all('a'):
             link = anchor.get('href', '')
             normalized_link = normalize_link(link, base_url, page_path) # type: ignore
-            if normalized_link not in urls_to_process and normalized_link not in scraped_urls:
-                urls_to_process.append(normalized_link)
+            if normalized_domain(normalized_link) != start_domain:
+                continue
+            if depth >= max_depth:
+                continue
+            if any(normalized_link == queued_url for queued_url, _ in urls_to_process):
+                continue
+            if normalized_link not in scraped_urls:
+                urls_to_process.append((normalized_link, depth + 1))
 
     return collected_emails
