@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
-import requests
+
+from ..website_enrich_types import PageResponse
+
+logger = logging.getLogger(__name__)
 
 
 CMS_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -153,7 +157,7 @@ GENERATOR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
-def _header_values(response: requests.Response) -> str:
+def _header_values(response: PageResponse) -> str:
     return " ".join(f"{key} {value}" for key, value in response.headers.items()).lower()
 
 
@@ -175,7 +179,7 @@ def _iter_asset_urls(soup: BeautifulSoup) -> list[str]:
     return asset_urls
 
 
-def _is_wix(response: requests.Response, soup: BeautifulSoup, haystack: str) -> bool:
+def _is_wix(response: PageResponse, soup: BeautifulSoup, haystack: str) -> bool:
     if any(pattern in haystack for pattern in ("_wixcss", "_wixbi", "wixstatic.com", "x-wix-")):
         return True
     html_tag = soup.find("html")
@@ -193,13 +197,13 @@ def _is_webflow(soup: BeautifulSoup, haystack: str) -> bool:
     return html_tag.has_attr("data-wf-page") or html_tag.has_attr("data-wf-site")
 
 
-def _is_shopify(response: requests.Response, haystack: str) -> bool:
+def _is_shopify(response: PageResponse, haystack: str) -> bool:
     if any(pattern in haystack for pattern in ("cdn.shopify.com", "shopify.theme", "x-shopid")):
         return True
     return ".myshopify.com" in response.text.lower()
 
 
-def detect_cms(response: requests.Response) -> str | None:
+def detect_cms(response: PageResponse) -> str | None:
     text_lower = response.text.lower()
     soup = BeautifulSoup(response.text, "lxml")
     generator = _get_meta_content(soup, "generator")
@@ -226,7 +230,11 @@ def detect_cms(response: requests.Response) -> str | None:
     return None
 
 
-def cms_detect_plugin(item: dict[str, Any], response: requests.Response) -> None:
+def cms_detect_plugin(item: dict[str, Any], response: PageResponse) -> None:
+    logger.info("CMS detect: scanning %s", response.url)
     cms_name = detect_cms(response)
     if cms_name:
+        logger.info("CMS detect: detected '%s' on %s", cms_name, response.url)
         item["cms"] = cms_name
+    else:
+        logger.info("CMS detect: no known CMS detected on %s", response.url)

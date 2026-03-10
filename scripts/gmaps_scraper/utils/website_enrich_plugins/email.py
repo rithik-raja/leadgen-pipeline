@@ -1,11 +1,16 @@
+import logging
 import re
 import urllib.parse
 from collections import deque
-from typing import Any
+from typing import Any, Union
 
 from bs4 import BeautifulSoup
 import requests
 import requests.exceptions as request_exception
+
+from ..website_enrich_types import PageResponse
+
+logger = logging.getLogger(__name__)
 
 
 def get_base_url(url: str) -> str:
@@ -40,12 +45,13 @@ def normalized_domain(url: str) -> str:
 
 def email_scrape_plugin(
     item: dict[str, Any],
-    response: requests.Response,
+    response: PageResponse,
     max_count: int = 30,
     max_depth: int = 2,
 ) -> None:
     start_url = response.url
-    urls_to_process = deque([(start_url, 0, response)])
+    logger.info("Email scrape: starting crawl from %s (max_depth=%d, max_count=%d)", start_url, max_depth, max_count)
+    urls_to_process: deque[tuple[str, int, Union[PageResponse, requests.Response]]] = deque([(start_url, 0, response)])
     scraped_urls: set[str] = set()
     collected_emails: set[str] = set()
     count = 0
@@ -54,12 +60,14 @@ def email_scrape_plugin(
     while urls_to_process:
         count += 1
         if count > max_count:
+            logger.debug("Email scrape: reached max page count (%d), stopping", max_count)
             break
 
         url, depth, current_response = urls_to_process.popleft()
         if url in scraped_urls:
             continue
 
+        logger.debug("Email scrape: processing page %s (depth=%d)", url, depth)
         scraped_urls.add(url)
         base_url = get_base_url(url)
         page_path = get_page_path(url)
@@ -86,10 +94,14 @@ def email_scrape_plugin(
                 request_exception.RequestException,
                 request_exception.MissingSchema,
                 request_exception.ConnectionError,
-            ):
+            ) as exc:
+                logger.debug("Email scrape: failed to fetch %s: %s", normalized_link, exc)
                 continue
 
             urls_to_process.append((normalized_link, depth + 1, next_response))
 
     if collected_emails:
+        logger.info("Email scrape: found %d email(s) across %d page(s): %s", len(collected_emails), len(scraped_urls), sorted(collected_emails))
         item["emails"] = sorted(collected_emails)
+    else:
+        logger.info("Email scrape: no emails found across %d page(s)", len(scraped_urls))

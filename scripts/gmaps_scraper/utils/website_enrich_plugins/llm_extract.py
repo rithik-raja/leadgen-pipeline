@@ -1,10 +1,15 @@
 from __future__ import annotations
+
+import logging
 from typing import Any
 
 from bs4 import BeautifulSoup
 import ollama
 from pydantic import BaseModel, ValidationError
-import requests
+
+from ..website_enrich_types import PageResponse
+
+logger = logging.getLogger(__name__)
 
 
 OLLAMA_MODEL = "lfm2:24b"
@@ -46,8 +51,9 @@ def run_structured_llm(
     last_error: Exception | None = None
     schema = output_model.model_json_schema()
 
-    for _ in range(LLM_VALIDATION_RETRIES):
+    for attempt in range(LLM_VALIDATION_RETRIES):
         try:
+            logger.debug("LLM extract: attempt %d/%d with model %s", attempt + 1, LLM_VALIDATION_RETRIES, OLLAMA_MODEL)
             response = ollama.chat(
                 model=OLLAMA_MODEL,
                 messages=[
@@ -62,21 +68,27 @@ def run_structured_llm(
                 raise ValueError("Empty structured output from model.")
             return output_model.model_validate_json(content)
         except (ValidationError, ValueError) as exc:
+            logger.warning("LLM extract: attempt %d failed: %s", attempt + 1, exc)
             last_error = exc
 
     assert last_error is not None
     raise last_error
 
 
-def llm_extract_plugin(item: dict[str, Any], response: requests.Response) -> None:
+def llm_extract_plugin(item: dict[str, Any], response: PageResponse) -> None:
+    logger.info("LLM extract: extracting ice breakers from %s", response.url)
     root_text = extract_page_text(response.text)
     if not root_text:
+        logger.warning("LLM extract: no page text found for %s, skipping", response.url)
         return
 
+    logger.debug("LLM extract: extracted %d chars of page text", len(root_text))
     root_result = run_structured_llm(
         user_content=root_text,
         system_prompt=ROOT_SYSTEM_PROMPT,
         output_model=Extraction,
     )
 
-    item["iceBreakerInfo"] = root_result.iceBreakerInfo # type: ignore
+    ice_breakers = root_result.iceBreakerInfo  # type: ignore
+    logger.info("LLM extract: found %d ice breaker(s) for %s", len(ice_breakers), response.url)
+    item["iceBreakerInfo"] = ice_breakers

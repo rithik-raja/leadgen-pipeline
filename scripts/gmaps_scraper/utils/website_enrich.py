@@ -1,43 +1,66 @@
+from __future__ import annotations
+
+import logging
+import random
+import urllib.request
 from collections.abc import Callable, Iterable
 from typing import Any
 
-import requests
-import requests.exceptions as request_exception
+from playwright.sync_api import sync_playwright
 
+from .website_enrich_types import PageResponse
 from .website_enrich_plugins import (
+    valid_website_plugin,
     cms_detect_plugin,
     email_scrape_plugin,
     llm_extract_plugin,
 )
 
-EnrichmentPlugin = Callable[[dict[str, Any], requests.Response], None]
+logger = logging.getLogger(__name__)
 
-CONNECTIVITY_CHECK_URLS: tuple[str, ...] = (
-    "https://1.1.1.1/cdn-cgi/trace",
-    "https://www.google.com/generate_204",
-)
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+]
 
 
-class InternetConnectionError(RuntimeError):
-    pass
-
+EnrichmentPlugin = Callable[[dict[str, Any], PageResponse], None]
 
 DEFAULT_PLUGINS: tuple[EnrichmentPlugin, ...] = (
+    valid_website_plugin,
     email_scrape_plugin,
     cms_detect_plugin,
     llm_extract_plugin,
 )
 
 
-def internet_connection_available() -> bool:
-    for url in CONNECTIVITY_CHECK_URLS:
-        try:
-            response = requests.get(url, timeout=5)
-            response.raise_for_status()
-            return True
-        except request_exception.RequestException:
-            continue
-    return False
+_CONNECTIVITY_PROBE = "https://www.google.com"
+_CONNECTIVITY_TIMEOUT = 5
+
+
+def _assert_network_reachable(original_exc: Exception) -> None:
+    """Raise a RuntimeError if the network appears to be down, otherwise return silently."""
+    try:
+        urllib.request.urlopen(_CONNECTIVITY_PROBE, timeout=_CONNECTIVITY_TIMEOUT)
+    except Exception:
+        raise RuntimeError("Network appears to be down — aborting enrichment.") from original_exc
+
+
+def fetch_page(url: str) -> PageResponse:
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        context = browser.new_context(user_agent=random.choice(USER_AGENTS))
+        page = context.new_page()
+        nav_response = page.goto(url, wait_until="domcontentloaded")
+        html = page.content()
+        final_url = page.url
+        headers = dict(nav_response.headers) if nav_response else {}
+        browser.close()
+    return PageResponse(text=html, url=final_url, headers=headers)
 
 
 def enrich_website(
@@ -58,29 +81,16 @@ def enrich_website(
     if not selected_plugins:
         return
 
-    response = requests.get(website, timeout=15)
-    response.raise_for_status()
-    # try:
-    #     response = requests.get(website, timeout=15)
-    #     response.raise_for_status()
-    # except request_exception.MissingSchema:
-    #     item["website_broken"] = True
-    #     return
-    # except request_exception.HTTPError:
-    #     item["website_broken"] = True
-    #     return
-    # except (
-    #     request_exception.ConnectionError,
-    #     request_exception.Timeout,
-    #     request_exception.TooManyRedirects,
-    #     request_exception.InvalidURL,
-    #     request_exception.InvalidSchema,
-    #     request_exception.SSLError,
-    # ) as exc:
-    #     if not internet_connection_available():
-    #         raise InternetConnectionError("Internet connection appears unavailable.") from exc
-    #     item["website_broken"] = True
-    #     return
+    logger.info("Fetching website: %s", website)
+    try:
+        response = fetch_page(website)
+    except Exception as exc:
+        _assert_network_reachable(exc)
+        logger.warning("Failed to fetch website %s: %s", website, exc)
+        return
 
     for plugin in selected_plugins:
+        plugin_name = plugin.__name__
+        logger.debug("Running plugin %s on %s", plugin_name, website)
         plugin(item, response)
+        logger.debug("Plugin %s finished for %s", plugin_name, website)
