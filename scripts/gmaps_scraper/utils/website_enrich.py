@@ -4,7 +4,11 @@ from typing import Any
 import requests
 import requests.exceptions as request_exception
 
-from .website_enrich_plugins import cms_detect_plugin, email_scrape_plugin, llm_extract_plugin
+from .website_enrich_plugins import (
+    cms_detect_plugin,
+    email_scrape_plugin,
+    llm_extract_plugin,
+)
 
 EnrichmentPlugin = Callable[[dict[str, Any], requests.Response], None]
 
@@ -19,7 +23,7 @@ class InternetConnectionError(RuntimeError):
 
 
 DEFAULT_PLUGINS: tuple[EnrichmentPlugin, ...] = (
-    #email_scrape_plugin,
+    email_scrape_plugin,
     cms_detect_plugin,
     llm_extract_plugin,
 )
@@ -54,27 +58,29 @@ def enrich_website(
     if not selected_plugins:
         return
 
-    try:
-        response = requests.get(website, timeout=15)
-        response.raise_for_status()
-    except request_exception.MissingSchema:
-        item["website_broken"] = True
-        return
-    except request_exception.HTTPError:
-        item["website_broken"] = True
-        return
-    except (
-        request_exception.ConnectionError,
-        request_exception.Timeout,
-        request_exception.TooManyRedirects,
-        request_exception.InvalidURL,
-        request_exception.InvalidSchema,
-        request_exception.SSLError,
-    ) as exc:
-        if not internet_connection_available():
-            raise InternetConnectionError("Internet connection appears unavailable.") from exc
-        item["website_broken"] = True
-        return
+    response = requests.get(website, timeout=15)
+    response.raise_for_status()
+    # try:
+    #     response = requests.get(website, timeout=15)
+    #     response.raise_for_status()
+    # except request_exception.MissingSchema:
+    #     item["website_broken"] = True
+    #     return
+    # except request_exception.HTTPError:
+    #     item["website_broken"] = True
+    #     return
+    # except (
+    #     request_exception.ConnectionError,
+    #     request_exception.Timeout,
+    #     request_exception.TooManyRedirects,
+    #     request_exception.InvalidURL,
+    #     request_exception.InvalidSchema,
+    #     request_exception.SSLError,
+    # ) as exc:
+    #     if not internet_connection_available():
+    #         raise InternetConnectionError("Internet connection appears unavailable.") from exc
+    #     item["website_broken"] = True
+    #     return
 
     for plugin in selected_plugins:
         plugin(item, response)
