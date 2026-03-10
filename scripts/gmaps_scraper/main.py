@@ -2,14 +2,22 @@ import argparse
 import asyncio
 import json
 import logging
+import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Iterable
 from typing import Any
+import ollama
+
+from .scraper import scrape_google_maps
+from .website_enrich import enrich_website
 
 TMP_DIR = Path("data/tmp")
 FINAL_DIR = Path("data/scraped/gmaps")
+OLLAMA_MODEL = "lfm2:24b"
+OLLAMA_STARTUP_TIMEOUT_SECONDS = 15.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -98,28 +106,47 @@ def format_json(data: Any, pretty: bool) -> str:
     return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
 
 
-def load_scraper():
+def start_ollama_server() -> subprocess.Popen[bytes]:
+    server_process = subprocess.Popen(
+        ["ollama", "serve"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    deadline = time.monotonic() + OLLAMA_STARTUP_TIMEOUT_SECONDS
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            ollama.chat(
+                model=OLLAMA_MODEL,
+                messages=[{"role": "user", "content": "Respond with {}"}],
+                format="json",
+                options={"num_predict": 1},
+            )
+            return server_process
+        except Exception as exc:
+            last_error = exc
+            time.sleep(0.5)
+
+    server_process.terminate()
     try:
-        from .scraper import scrape_google_maps as scrape_fn
-        return scrape_fn
-    except ImportError:
-        package_root = Path(__file__).resolve().parent.parent
-        if str(package_root) not in sys.path:
-            sys.path.insert(0, str(package_root))
-        from gmaps_scraper.scraper import scrape_google_maps as scrape_fn  # type: ignore
-        return scrape_fn
+        server_process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        server_process.kill()
+        server_process.wait(timeout=5)
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Timed out waiting for Ollama server to start.")
 
 
-def load_website_enricher():
+def stop_ollama_server(server_process: subprocess.Popen[bytes]) -> None:
+    server_process.terminate()
     try:
-        from .website_enrich import enrich_website as enrich_fn
-        return enrich_fn
-    except ImportError:
-        package_root = Path(__file__).resolve().parent.parent
-        if str(package_root) not in sys.path:
-            sys.path.insert(0, str(package_root))
-        from gmaps_scraper.website_enrich import enrich_website as enrich_fn  # type: ignore
-        return enrich_fn
+        server_process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        server_process.kill()
+        server_process.wait(timeout=5)
 
 
 def timestamped_gmap_filename() -> str:
@@ -130,14 +157,10 @@ def enrich_items(
     items: list[dict[str, Any]],
     plugins: Iterable[Any] | None = None,
 ) -> list[dict[str, Any]]:
-    enrich_website = load_website_enricher()
     for idx, item in enumerate(items, start=1):
         website = item.get("website")
         if isinstance(website, str) and website.strip():
-            try:
-                enrich_website(item, plugins=plugins)
-            except Exception as exc:
-                logging.warning("Website enrichment failed for item %d (%s): %s", idx, website, exc)
+            enrich_website(item, plugins=plugins)
     return items
 
 
@@ -174,12 +197,13 @@ async def run(args: argparse.Namespace) -> int:
             return 0
 
         total = 0
+        ollama_server = start_ollama_server()
         for tmp_file in pending:
             total += enrich_file(tmp_file, pretty=args.pretty)
+        stop_ollama_server(ollama_server)
         logging.info("Enriched %d file(s), %d record(s) total.", len(pending), total)
         return 0
 
-    scrape_google_maps = load_scraper()
     results = await scrape_google_maps(
         query=args.query,
         max_places=args.max_places,
@@ -194,7 +218,9 @@ async def run(args: argparse.Namespace) -> int:
     logging.info("Saved raw scrape to %s", tmp_path)
 
     final_path = args.output if args.output is not None else FINAL_DIR / filename
+    ollama_server = start_ollama_server()
     enrich_file(tmp_path, pretty=args.pretty, final_output=final_path, print_output=args.print)
+    stop_ollama_server(ollama_server)
     return 0
 
 

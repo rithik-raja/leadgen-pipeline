@@ -211,7 +211,7 @@ def detect_cms(response: requests.Response) -> str | None:
     for cms_name, generator_pattern in GENERATOR_PATTERNS:
         if generator_pattern.search(generator):
             return cms_name
-
+    
     if _is_wix(response, soup, haystack):
         return "wix"
     if _is_webflow(soup, haystack):

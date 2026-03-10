@@ -8,12 +8,32 @@ from .website_enrich_plugins import cms_detect_plugin, email_scrape_plugin, llm_
 
 EnrichmentPlugin = Callable[[dict[str, Any], requests.Response], None]
 
+CONNECTIVITY_CHECK_URLS: tuple[str, ...] = (
+    "https://1.1.1.1/cdn-cgi/trace",
+    "https://www.google.com/generate_204",
+)
+
+
+class InternetConnectionError(RuntimeError):
+    pass
+
 
 DEFAULT_PLUGINS: tuple[EnrichmentPlugin, ...] = (
-    email_scrape_plugin,
+    #email_scrape_plugin,
     cms_detect_plugin,
     llm_extract_plugin,
 )
+
+
+def internet_connection_available() -> bool:
+    for url in CONNECTIVITY_CHECK_URLS:
+        try:
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
+            return True
+        except request_exception.RequestException:
+            continue
+    return False
 
 
 def enrich_website(
@@ -35,10 +55,25 @@ def enrich_website(
         return
 
     try:
-        response = requests.get(website)
+        response = requests.get(website, timeout=15)
         response.raise_for_status()
-    except (request_exception.RequestException, request_exception.MissingSchema, request_exception.ConnectionError):
-        print('There was a request error')
+    except request_exception.MissingSchema:
+        item["website_broken"] = True
+        return
+    except request_exception.HTTPError:
+        item["website_broken"] = True
+        return
+    except (
+        request_exception.ConnectionError,
+        request_exception.Timeout,
+        request_exception.TooManyRedirects,
+        request_exception.InvalidURL,
+        request_exception.InvalidSchema,
+        request_exception.SSLError,
+    ) as exc:
+        if not internet_connection_available():
+            raise InternetConnectionError("Internet connection appears unavailable.") from exc
+        item["website_broken"] = True
         return
 
     for plugin in selected_plugins:
