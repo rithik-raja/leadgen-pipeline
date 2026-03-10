@@ -5,6 +5,7 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any
 
 TMP_DIR = Path("data/tmp")
@@ -111,13 +112,13 @@ def load_scraper():
 
 def load_website_enricher():
     try:
-        from .website_enrich import scrape_website as enrich_fn
+        from .website_enrich import enrich_website as enrich_fn
         return enrich_fn
     except ImportError:
         package_root = Path(__file__).resolve().parent.parent
         if str(package_root) not in sys.path:
             sys.path.insert(0, str(package_root))
-        from gmaps_scraper.website_enrich import scrape_website as enrich_fn  # type: ignore
+        from gmaps_scraper.website_enrich import enrich_website as enrich_fn  # type: ignore
         return enrich_fn
 
 
@@ -125,21 +126,19 @@ def timestamped_gmap_filename() -> str:
     return datetime.now().strftime("gmap_%Y-%m-%dT%H:%M:%S.json")
 
 
-def enrich_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    scrape_website = load_website_enricher()
-    enriched: list[dict[str, Any]] = []
+def enrich_items(
+    items: list[dict[str, Any]],
+    plugins: Iterable[Any] | None = None,
+) -> list[dict[str, Any]]:
+    enrich_website = load_website_enricher()
     for idx, item in enumerate(items, start=1):
-        record = dict(item)
-        emails: list[str] = []
-        website = record.get("website")
+        website = item.get("website")
         if isinstance(website, str) and website.strip():
             try:
-                emails = sorted(scrape_website(website))
+                enrich_website(item, plugins=plugins)
             except Exception as exc:
-                logging.warning("Email enrichment failed for item %d (%s): %s", idx, website, exc)
-        record["emails"] = emails
-        enriched.append(record)
-    return enriched
+                logging.warning("Website enrichment failed for item %d (%s): %s", idx, website, exc)
+    return items
 
 
 def save_json(path: Path, data: Any, pretty: bool) -> None:
