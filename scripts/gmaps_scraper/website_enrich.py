@@ -4,12 +4,16 @@ from typing import Any
 import requests
 import requests.exceptions as request_exception
 
-from .website_enrich_plugins import email_scrape_plugin
+from .website_enrich_plugins import cms_detect_plugin, email_scrape_plugin, llm_extract_plugin
 
 EnrichmentPlugin = Callable[[dict[str, Any], requests.Response], None]
 
 
-DEFAULT_PLUGINS: tuple[EnrichmentPlugin, ...] = (email_scrape_plugin,)
+DEFAULT_PLUGINS: tuple[EnrichmentPlugin, ...] = (
+    email_scrape_plugin,
+    cms_detect_plugin,
+    llm_extract_plugin,
+)
 
 
 def enrich_website(
