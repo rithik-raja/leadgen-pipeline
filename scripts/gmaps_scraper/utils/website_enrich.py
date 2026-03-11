@@ -28,9 +28,9 @@ USER_AGENTS = [
 EnrichmentPlugin = Callable[[dict[str, Any], PageResponse], None]
 
 DEFAULT_PLUGINS: tuple[EnrichmentPlugin, ...] = (
-    valid_website_plugin,
-    email_scrape_plugin,
-    cms_detect_plugin,
+    #valid_website_plugin,
+    #email_scrape_plugin,
+    #cms_detect_plugin,
     llm_extract_plugin,
 )
 

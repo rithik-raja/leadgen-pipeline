@@ -5,3 +5,4 @@ AGENTS.md
 data/
 temp*
 **/__pycache__/
+.env

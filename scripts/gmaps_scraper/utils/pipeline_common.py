@@ -1,7 +1,5 @@
 import json
 import logging
-import subprocess
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -10,8 +8,6 @@ TMP_DIR = Path("data/tmp")
 FINAL_DIR = Path("data/scraped/gmaps")
 RAW_STAGE_SUFFIX = ".raw.json"
 ENRICH_STAGE_SUFFIX = ".enriched.json"
-OLLAMA_MODEL = "lfm2:24b"
-OLLAMA_STARTUP_TIMEOUT_SECONDS = 15.0
 
 
 def format_json(data: Any, pretty: bool) -> str:
@@ -84,51 +80,6 @@ def list_raw_stage_files() -> list[Path]:
 def list_enrich_stage_files() -> list[Path]:
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     return sorted(TMP_DIR.glob(f"*{ENRICH_STAGE_SUFFIX}"))
-
-
-def start_ollama_server() -> subprocess.Popen[bytes]:
-    import ollama
-
-    server_process = subprocess.Popen(
-        ["ollama", "serve"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-    deadline = time.monotonic() + OLLAMA_STARTUP_TIMEOUT_SECONDS
-    last_error: Exception | None = None
-    while time.monotonic() < deadline:
-        try:
-            ollama.chat(
-                model=OLLAMA_MODEL,
-                messages=[{"role": "user", "content": "Respond with {}"}],
-                format="json",
-                options={"num_predict": 1},
-            )
-            return server_process
-        except Exception as exc:
-            last_error = exc
-            time.sleep(0.5)
-
-    server_process.terminate()
-    try:
-        server_process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        server_process.kill()
-        server_process.wait(timeout=5)
-
-    if last_error is not None:
-        raise last_error
-    raise RuntimeError("Timed out waiting for Ollama server to start.")
-
-
-def stop_ollama_server(server_process: subprocess.Popen[bytes]) -> None:
-    server_process.terminate()
-    try:
-        server_process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        server_process.kill()
-        server_process.wait(timeout=5)
 
 
 def configure_logging(log_level: str) -> None:

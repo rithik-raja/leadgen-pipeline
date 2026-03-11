@@ -11,8 +11,6 @@ from ..utils.pipeline_common import (
     load_items,
     raw_stage_path,
     save_json,
-    start_ollama_server,
-    stop_ollama_server,
 )
 
 
@@ -128,13 +126,9 @@ def main() -> int:
             logging.info("No raw stage files found.")
             return 0
 
-        ollama_server = start_ollama_server()
-        try:
-            total_records = 0
-            for raw_file in raw_files:
-                total_records += enrich_items_incrementally(raw_file, args.pretty)
-        finally:
-            stop_ollama_server(ollama_server)
+        total_records = 0
+        for raw_file in raw_files:
+            total_records += enrich_items_incrementally(raw_file, args.pretty)
 
         logging.info(
             "Completed enrichment for %d run(s), %d record(s) total.",

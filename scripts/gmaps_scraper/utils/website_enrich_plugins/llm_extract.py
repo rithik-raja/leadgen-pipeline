@@ -1,20 +1,34 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from bs4 import BeautifulSoup
-import ollama
+from google import genai
+from google.genai import types
 from pydantic import BaseModel, ValidationError
+from dotenv import load_dotenv
 
 from ..website_enrich_types import PageResponse
 
 logger = logging.getLogger(__name__)
 
 
-OLLAMA_MODEL = "lfm2:24b"
+GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
 MAX_PAGE_TEXT_CHARS = 16000
 LLM_VALIDATION_RETRIES = 3
+
+_client: genai.Client | None = None
+
+load_dotenv()
+
+
+def get_client() -> genai.Client:
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    return _client
 
 
 class Extraction(BaseModel):
@@ -23,15 +37,57 @@ class Extraction(BaseModel):
 
 ROOT_SYSTEM_PROMPT = """You are a senior sales engineer reviewing a business website homepage for cold-email personalization.
 
-Your job is to extract outreach-relevant facts that can turn into strong ice breakers. Look for founder/operator tenure, local roots, awards, certifications, community work, notable specialties, unusual proof points, and specific differentiators that signal credibility or uniqueness.
+Your job is to extract outreach-relevant facts that can turn into strong icebreakers.
+
+Look for:
+- unusually long tenure (20+ years)
+- named awards or recognitions
+- non-obvious certifications
+- specific community partnerships
+- quantified proof points (e.g. "500+ installs", "40% waste reduction")
+- rare specialties that set the company apart
+
+Differentiation Test:
+Only include facts that would NOT appear on the majority of competitor websites in the same industry. If the statement could plausibly appear on most competitor websites, treat it as generic marketing copy and exclude it.
+
+Icebreaker Framing:
+Each icebreaker must start with one of the following prefixes and match the correct context.
+
+"I noticed that"
+Use for a unique differentiator such as an uncommon specialty, partnership, or positioning.
+
+"I was impressed to see that"
+Use for distinct achievements such as awards, recognitions, scale, or strong quantified metrics.
+
+"I was curious when I saw that"
+Use for interesting differentiators or unusual focus areas that stand out.
+
+"I see you're ... — ever tried ...?"
+Use only when the text explicitly mentions hobbies, personal interests, or lifestyle activities. Do not invent hobbies.
 
 Rules:
-- Use only facts directly supported by the provided page text.
-- Write `iceBreakerInfo` as short, factual, quote-ready strings.
-- Ignore vague claims, broad slogans, and generic SEO copy.
-- Avoid generic points that signal lazy research, such as "Has high customer ratings" or "Offers customized solutions"
-- Rather, focus on unique identifiers that stand out, such as "Has been serving the Tampa area for 20 years"
-- Return valid JSON matching the schema exactly."""
+- ONLY include facts with a direct or near-verbatim basis in the provided page text.
+- If you are not certain the text says it, do not include it.
+- Do NOT infer or calculate information.
+- Return an EMPTY list if the page contains only generic marketing copy.
+- Return at most 3 icebreakers ranked by strength.
+- Each entry must read as a complete natural sentence.
+- NEVER include: licensing or insurance, free quotes, guarantees, service area lists, customer review mentions, or experience claims under 15 years.
+
+Weak Signal Rejection:
+If the page contains only generic marketing language, service descriptions, location lists, licensing statements, or vague quality claims without numbers, return an EMPTY list.
+
+GOOD examples:
+- I noticed that the team specializes in historic home restorations.
+- I was impressed to see that the company has completed over 1,200 installations across four states.
+- I was curious when I saw that the team focuses exclusively on energy-efficient retrofit projects.
+
+BAD examples:
+- I noticed that the company is licensed and insured.
+- I noticed that the team serves the local area.
+- I noticed that the company offers free quotes.
+- I noticed that the company is committed to customer satisfaction.
+"""
 
 
 def extract_page_text(html: str) -> str:
@@ -42,28 +98,28 @@ def extract_page_text(html: str) -> str:
     return text[:MAX_PAGE_TEXT_CHARS]
 
 
-
 def run_structured_llm(
     user_content: str,
     system_prompt: str,
     output_model: type[BaseModel],
 ) -> BaseModel:
     last_error: Exception | None = None
-    schema = output_model.model_json_schema()
+    client = get_client()
 
     for attempt in range(LLM_VALIDATION_RETRIES):
         try:
-            logger.debug("LLM extract: attempt %d/%d with model %s", attempt + 1, LLM_VALIDATION_RETRIES, OLLAMA_MODEL)
-            response = ollama.chat(
-                model=OLLAMA_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                format=schema,
-                options={"temperature": 0},
+            logger.debug("LLM extract: attempt %d/%d with model %s", attempt + 1, LLM_VALIDATION_RETRIES, GEMINI_MODEL)
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=user_content,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    response_mime_type="application/json",
+                    response_schema=output_model,
+                    temperature=0,
+                ),
             )
-            content = response.message.content if response.message else ""
+            content = response.text
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("Empty structured output from model.")
             return output_model.model_validate_json(content)
